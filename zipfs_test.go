@@ -89,6 +89,8 @@ func TestServeHTTP(t *testing.T) {
 		ContentType     string
 		ContentLength   string
 		ContentEncoding string
+		ETag            string
+		Size            int
 	}{
 		{
 			Path:   "/circle.png",
@@ -99,6 +101,8 @@ func TestServeHTTP(t *testing.T) {
 			ContentType:     "image/png",
 			ContentLength:   "4758",
 			ContentEncoding: "deflate",
+			Size:            4758,
+			ETag:            `"1296529fb2ff"`,
 		},
 		{
 			Path:   "/circle.png",
@@ -109,6 +113,8 @@ func TestServeHTTP(t *testing.T) {
 			ContentType:     "image/png",
 			ContentLength:   "5973",
 			ContentEncoding: "",
+			Size:            5973,
+			ETag:            `"1296529fb2ff"`,
 		},
 		{
 			Path:   "/test.html",
@@ -119,6 +125,7 @@ func TestServeHTTP(t *testing.T) {
 			ContentType:     "text/html; charset=utf-8",
 			ContentLength:   "85",
 			ContentEncoding: "deflate",
+			ETag:            `"5532e54275"`,
 		},
 		{
 			Path:            "/test.html",
@@ -127,6 +134,8 @@ func TestServeHTTP(t *testing.T) {
 			ContentType:     "text/html; charset=utf-8",
 			ContentLength:   "122",
 			ContentEncoding: "",
+			Size:            122,
+			ETag:            `"5532e54275"`,
 		},
 		{
 			Path:   "/does/not/exist",
@@ -135,6 +144,68 @@ func TestServeHTTP(t *testing.T) {
 				"Accept-Encoding: deflate, gzip",
 			},
 			ContentType: "text/plain; charset=utf-8",
+		},
+		{
+			Path:   "/random.dat",
+			Status: 200,
+			Headers: []string{
+				"Accept-Encoding: deflate",
+			},
+			ContentType:     "application/octet-stream",
+			ContentLength:   "10000",
+			ContentEncoding: "",
+			Size:            10000,
+			ETag:            `"27106c15f45b"`,
+		},
+		{
+			Path:            "/random.dat",
+			Status:          200,
+			Headers:         []string{},
+			ContentType:     "application/octet-stream",
+			ContentLength:   "10000",
+			ContentEncoding: "",
+			Size:            10000,
+			ETag:            `"27106c15f45b"`,
+		},
+		{
+			Path:   "/random.dat",
+			Status: 206,
+			Headers: []string{
+				`If-Range: "27106c15f45b"`,
+				"Range: bytes=0-499",
+			},
+			ContentType:     "application/octet-stream",
+			ContentLength:   "500",
+			ContentEncoding: "",
+			Size:            500,
+			ETag:            `"27106c15f45b"`,
+		},
+		{
+			Path:   "/random.dat",
+			Status: 200,
+			Headers: []string{
+				`If-Range: "123456789"`,
+				"Range: bytes=0-499",
+				"Accept-Encoding: deflate, gzip",
+			},
+			ContentType:     "application/octet-stream",
+			ContentLength:   "10000",
+			ContentEncoding: "",
+			Size:            10000,
+			ETag:            `"27106c15f45b"`,
+		},
+		{
+			Path:   "/random.dat",
+			Status: 304,
+			Headers: []string{
+				`If-None-Match: "27106c15f45b"`,
+				"Accept-Encoding: deflate, gzip",
+			},
+			ContentType:     "",
+			ContentLength:   "",
+			ContentEncoding: "",
+			Size:            0,
+			ETag:            `"27106c15f45b"`,
 		},
 	}
 
@@ -146,6 +217,7 @@ func TestServeHTTP(t *testing.T) {
 				Path:   tc.Path,
 			},
 			Header: make(http.Header),
+			Method: "GET",
 		}
 
 		for _, header := range tc.Headers {
@@ -162,6 +234,12 @@ func TestServeHTTP(t *testing.T) {
 		assert.Equal(tc.ContentType, w.Header().Get("Content-Type"), tc.Path)
 		assert.Equal(tc.ContentLength, w.Header().Get("Content-Length"), tc.Path)
 		assert.Equal(tc.ContentEncoding, w.Header().Get("Content-Encoding"), tc.Path)
+		if tc.Size > 0 {
+			assert.Equal(tc.Size, w.buf.Len(), tc.Path)
+		}
+		if tc.ETag != "" {
+			assert.Equal(tc.ETag, w.Header().Get("Etag"), tc.Path)
+		}
 	}
 
 }
