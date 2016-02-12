@@ -42,9 +42,9 @@ func (fs *FileSystem) Close() error {
 	return err
 }
 
-// Open will open the Zip file specified by name and
-// return a FileSystem. (TODO: rename to avoid confusion with the Open method?)
-func Open(name string) (*FileSystem, error) {
+// New will open the Zip file specified by name and
+// return a new FileSystem based on that Zip file.
+func New(name string) (*FileSystem, error) {
 	file, err := os.Open(name)
 	if err != nil {
 		return nil, err
