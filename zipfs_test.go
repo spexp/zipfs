@@ -72,6 +72,24 @@ func TestNew(t *testing.T) {
 	}
 }
 
+func TestFileSystem(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	fs, err := New("testdata/testdata.zip")
+	require.NoError(err)
+	require.NotNil(fs)
+
+	f, err := fs.Open("/xxx")
+	assert.Error(err)
+	assert.Nil(f)
+
+	f, err = fs.Open("test.html")
+	assert.NoError(err)
+	assert.NotNil(f)
+
+}
+
 func TestServeHTTP(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
