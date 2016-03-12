@@ -179,10 +179,10 @@ func (fi *fileInfo) Size() int64 {
 }
 
 func (fi *fileInfo) Mode() os.FileMode {
-	if fi.zipFile == nil {
+	if fi.zipFile == nil || fi.IsDir() {
 		return 0555 | os.ModeDir
 	}
-	return fi.zipFile.Mode()
+	return 0444
 }
 
 var dirTime = time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)

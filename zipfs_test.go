@@ -1,11 +1,13 @@
 package zipfs
 
 import (
+	"archive/zip"
 	"bytes"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 
@@ -423,4 +425,61 @@ func TestReaddir(t *testing.T) {
 	assert.Error(err)
 	assert.Equal(io.EOF, err)
 	assert.Equal(0, len(a))
+}
+
+func TestFileInfo(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	fs, err := New("testdata/testdata.zip")
+	require.NoError(err)
+
+	testCases := []struct {
+		Path       string
+		Name       string
+		Size       int64
+		Mode       os.FileMode
+		IsDir      bool
+		HasZipFile bool
+	}{
+		// Don't use any text files here because the sizes
+		// are different betwen Windows and Unix-like OSs.
+		{
+			Path:       "/img/circle.png",
+			Name:       "circle.png",
+			Size:       5973,
+			Mode:       0444,
+			IsDir:      false,
+			HasZipFile: true,
+		},
+		{
+			Path:       "/img/",
+			Name:       "img",
+			Size:       0,
+			Mode:       os.ModeDir | 0555,
+			IsDir:      true,
+			HasZipFile: true,
+		},
+		{
+			Path:       "/",
+			Name:       "/",
+			Size:       0,
+			Mode:       os.ModeDir | 0555,
+			IsDir:      true,
+			HasZipFile: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		file, err := fs.Open(tc.Path)
+		require.NoError(err)
+		fi, err := file.Stat()
+		require.NoError(err)
+		assert.Equal(tc.Name, fi.Name())
+		assert.Equal(tc.Size, fi.Size())
+		assert.Equal(tc.Mode, fi.Mode())
+		assert.Equal(tc.IsDir, fi.IsDir())
+		_, hasZipFile := fi.Sys().(*zip.File)
+		assert.Equal(tc.HasZipFile, hasZipFile, fi.Name())
+		assert.False(fi.ModTime().IsZero())
+	}
 }
