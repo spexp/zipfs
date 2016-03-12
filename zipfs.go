@@ -18,15 +18,15 @@ import (
 )
 
 var (
-	errNotImplemented = errors.New("not implemented yet")
-	errFileClosed     = errors.New("file closed")
-	errNotDirectory   = errors.New("not a directory")
-	errDirectory      = errors.New("is a directory")
+	errNotImplemented   = errors.New("not implemented yet")
+	errFileClosed       = errors.New("file closed")
+	errFileSystemClosed = errors.New("filesystem closed")
+	errNotDirectory     = errors.New("not a directory")
+	errDirectory        = errors.New("is a directory")
 )
 
 // FileSystem is a file system based on a ZIP file.
-// It currently does not, (but could) implement the
-// http.FileSystem interface.
+// It implements the http.FileSystem interface.
 type FileSystem struct {
 	readerAt  io.ReaderAt
 	reader    *zip.Reader
@@ -38,6 +38,9 @@ type FileSystem struct {
 // A http.File is returned, which can be served by
 // the http.FileServer implementation.
 func (fs *FileSystem) Open(name string) (http.File, error) {
+	if fs.readerAt == nil {
+		return nil, errFileSystemClosed
+	}
 	name = path.Clean(name)
 	trimmedName := strings.TrimLeft(name, "/")
 	fi := fs.fileInfos[trimmedName]
@@ -48,7 +51,8 @@ func (fs *FileSystem) Open(name string) (http.File, error) {
 	return fi.openReader(name), nil
 }
 
-// Close closes the file system's underlying ZIP file.
+// Close closes the file system's underlying ZIP file and
+// releases all memory allocated to internal data structures.
 func (fs *FileSystem) Close() error {
 	fs.reader = nil
 	fs.readerAt = nil
@@ -57,6 +61,7 @@ func (fs *FileSystem) Close() error {
 		err = fs.closer.Close()
 		fs.closer = nil
 	}
+	fs.fileInfos = nil
 	return err
 }
 
