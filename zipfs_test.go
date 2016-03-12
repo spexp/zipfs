@@ -3,6 +3,7 @@ package zipfs
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/md5"
 	"fmt"
 	"io"
 	"net/http"
@@ -427,6 +428,7 @@ func TestReaddir(t *testing.T) {
 	assert.Equal(0, len(a))
 }
 
+// TestFileInfo tests the os.FileInfo associated with the http.File
 func TestFileInfo(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
@@ -481,5 +483,62 @@ func TestFileInfo(t *testing.T) {
 		_, hasZipFile := fi.Sys().(*zip.File)
 		assert.Equal(tc.HasZipFile, hasZipFile, fi.Name())
 		assert.False(fi.ModTime().IsZero())
+	}
+}
+
+// TestFile tests the file reading capabilities.
+func TestFile(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	fs, err := New("testdata/testdata.zip")
+	require.NoError(err)
+
+	testCases := []struct {
+		Path string
+		Size int
+		MD5  string
+	}{
+		{
+			Path: "/random.dat",
+			Size: 10000,
+			MD5:  "3c9fe0521cabb2ab38484cd1c024a61d",
+		},
+		{
+			Path: "/img/circle.png",
+			Size: 5973,
+			MD5:  "05e3048db45e71749e06658ccfc0753b",
+		},
+	}
+
+	for _, tc := range testCases {
+		file, err := fs.Open(tc.Path)
+		assert.NoError(err)
+		buf := make([]byte, tc.Size)
+		n, err := file.Read(buf)
+		assert.NoError(err)
+		assert.Equal(tc.Size, n)
+		md5Text := fmt.Sprintf("%x", md5.Sum(buf))
+		assert.Equal(tc.MD5, md5Text)
+		n, err = file.Read(buf)
+		assert.Error(err)
+		assert.Equal(io.EOF, err)
+
+		nSeek, err := file.Seek(int64(tc.Size/2), 0)
+		assert.NoError(err)
+		assert.Equal(int64(tc.Size/2), nSeek)
+		nSeek, err = file.Seek(0, 0)
+		assert.NoError(err)
+		assert.Equal(int64(0), nSeek)
+
+		n, err = file.Read(buf)
+		assert.NoError(err)
+		assert.Equal(tc.Size, n)
+		md5Text = fmt.Sprintf("%x", md5.Sum(buf))
+		assert.Equal(tc.MD5, md5Text)
+		n, err = file.Read(buf)
+		assert.Error(err)
+		assert.Equal(io.EOF, err)
+
+		file.Close()
 	}
 }
