@@ -2,6 +2,8 @@ package zipfs
 
 import (
 	"bytes"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -111,7 +113,7 @@ func TestServeHTTP(t *testing.T) {
 		Size            int
 	}{
 		{
-			Path:   "/circle.png",
+			Path:   "/img/circle.png",
 			Status: 200,
 			Headers: []string{
 				"Accept-Encoding: deflate, gzip",
@@ -123,7 +125,7 @@ func TestServeHTTP(t *testing.T) {
 			ETag:            `"1296529fb2ff"`,
 		},
 		{
-			Path:   "/circle.png",
+			Path:   "/img/circle.png",
 			Status: 200,
 			Headers: []string{
 				"Accept-Encoding: gzip",
@@ -135,7 +137,7 @@ func TestServeHTTP(t *testing.T) {
 			ETag:            `"1296529fb2ff"`,
 		},
 		{
-			Path:   "/test.html",
+			Path:   "/index.html",
 			Status: 200,
 			Headers: []string{
 				"Accept-Encoding: deflate, gzip",
@@ -150,10 +152,10 @@ func TestServeHTTP(t *testing.T) {
 			Status:          200,
 			Headers:         []string{},
 			ContentType:     "text/html; charset=utf-8",
-			ContentLength:   "122",
+			ContentLength:   "134",
 			ContentEncoding: "",
-			Size:            122,
-			ETag:            `"5532e54275"`,
+			Size:            134,
+			ETag:            `"5900c7c98f"`,
 		},
 		{
 			Path:   "/does/not/exist",
@@ -260,4 +262,165 @@ func TestServeHTTP(t *testing.T) {
 		}
 	}
 
+}
+
+func TestOpen(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	fs, err := New("testdata/testdata.zip")
+	require.NoError(err)
+
+	testCases := []struct {
+		Path  string
+		Error string
+	}{
+		{
+			Path:  "/does/not/exist",
+			Error: "file does not exist",
+		},
+		{
+			Path:  "/img",
+			Error: "",
+		},
+		{
+			Path:  "/img/circle.png",
+			Error: "",
+		},
+	}
+	for _, tc := range testCases {
+		f, err := fs.Open(tc.Path)
+		if tc.Error == "" {
+			assert.NoError(err)
+			assert.NotNil(f)
+		} else {
+			assert.Error(err)
+			assert.True(strings.Contains(err.Error(), tc.Error), err.Error())
+			assert.True(strings.Contains(err.Error(), tc.Path), err.Error())
+		}
+	}
+}
+
+func TestReaddir(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	fs, err := New("testdata/testdata.zip")
+	require.NoError(err)
+
+	testCases := []struct {
+		Path  string
+		Count int
+		Error string
+		Files []string
+	}{
+		{
+			Path:  "/img",
+			Error: "",
+			Files: []string{
+				"another-circle.png",
+				"circle.png",
+			},
+		},
+		{
+			Path:  "/",
+			Error: "",
+			Files: []string{
+				"empty",
+				"img",
+				"index.html",
+				"js",
+				"lots-of-files",
+				"not-a-zip-file.txt",
+				"random.dat",
+				"test.html",
+			},
+		},
+		{
+			Path:  "/lots-of-files",
+			Error: "",
+			Files: []string{
+				"file-01",
+				"file-02",
+				"file-03",
+				"file-04",
+				"file-05",
+				"file-06",
+				"file-07",
+				"file-08",
+				"file-09",
+				"file-10",
+				"file-11",
+				"file-12",
+				"file-13",
+				"file-14",
+				"file-15",
+				"file-16",
+				"file-17",
+				"file-18",
+				"file-19",
+				"file-20",
+			},
+		},
+		{
+			Path:  "/img/circle.png",
+			Error: "not a directory",
+		},
+		{
+			Path:  "/img/circle.png",
+			Error: "not a directory",
+			Count: 2,
+		},
+	}
+
+	for _, tc := range testCases {
+		f, err := fs.Open(tc.Path)
+		require.NoError(err)
+		require.NotNil(f)
+
+		files, err := f.Readdir(tc.Count)
+		if tc.Error == "" {
+			assert.NoError(err)
+			assert.NotNil(files)
+			printError := false
+			if len(files) != len(tc.Files) {
+				printError = true
+			} else {
+				for i, file := range files {
+					if file.Name() != tc.Files[i] {
+						printError = true
+						break
+					}
+				}
+			}
+			if printError {
+				t.Log(tc.Path, "Readdir expected:")
+				for i, f := range tc.Files {
+					t.Logf("    %d: %s\n", i, f)
+				}
+				t.Log(tc.Path, "Readdir actual:")
+				for i, f := range files {
+					t.Logf("    %d: %s\n", i, f.Name())
+				}
+				t.Error("Readdir failed test")
+			}
+		} else {
+			assert.Error(err)
+			assert.Nil(files)
+			assert.True(strings.Contains(err.Error(), tc.Error), err.Error())
+			assert.True(strings.Contains(err.Error(), tc.Path), err.Error())
+		}
+	}
+
+	file, err := fs.Open("/lots-of-files")
+	require.NoError(err)
+	for i := 0; i < 10; i++ {
+		a, err := file.Readdir(2)
+		require.NoError(err)
+		assert.Equal(len(a), 2)
+		assert.Equal(fmt.Sprintf("file-%02d", i*2+1), a[0].Name())
+		assert.Equal(fmt.Sprintf("file-%02d", i*2+2), a[1].Name())
+	}
+	a, err := file.Readdir(2)
+	assert.Error(err)
+	assert.Equal(io.EOF, err)
+	assert.Equal(0, len(a))
 }

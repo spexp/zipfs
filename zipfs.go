@@ -39,13 +39,13 @@ type FileSystem struct {
 // the http.FileServer implementation.
 func (fs *FileSystem) Open(name string) (http.File, error) {
 	name = path.Clean(name)
-	name = strings.TrimLeft(name, "/")
-	fi := fs.fileInfos[name]
+	trimmedName := strings.TrimLeft(name, "/")
+	fi := fs.fileInfos[trimmedName]
 	if fi == nil {
 		return nil, &os.PathError{Op: "Open", Path: name, Err: os.ErrNotExist}
 	}
 
-	return fi.openReader(), nil
+	return fi.openReader(name), nil
 }
 
 // Close closes the file system's underlying ZIP file.
@@ -205,17 +205,10 @@ func (fi *fileInfo) Sys() interface{} {
 	return fi.zipFile
 }
 
-func (fi *fileInfo) pathError(op string, err error) error {
-	return &os.PathError{
-		Op:   op,
-		Path: fi.name,
-		Err:  err,
-	}
-}
-
-func (fi *fileInfo) openReader() *fileReader {
+func (fi *fileInfo) openReader(name string) *fileReader {
 	return &fileReader{
 		fileInfo: fi,
+		name:     name,
 	}
 }
 
@@ -250,6 +243,7 @@ func (fi *fileInfo) readdir() ([]os.FileInfo, error) {
 }
 
 type fileReader struct {
+	name     string // the name used to open
 	fileInfo *fileInfo
 	reader   io.ReadCloser
 	file     *os.File
@@ -349,7 +343,11 @@ func (f *fileReader) Stat() (os.FileInfo, error) {
 }
 
 func (f *fileReader) pathError(op string, err error) error {
-	return f.fileInfo.pathError(op, err)
+	return &os.PathError{
+		Op:   op,
+		Path: f.name,
+		Err:  err,
+	}
 }
 
 // FileServer returns a HTTP handler that serves
