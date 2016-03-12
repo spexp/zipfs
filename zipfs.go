@@ -472,8 +472,8 @@ func serveDeflate(w http.ResponseWriter, r *http.Request, f *zip.File, readerAt 
 	}
 
 	// re-use buffers to reduce stress on GC
-	buf := getBuf()
-	defer freeBuf(buf)
+	buf := bufPool.Get()
+	defer bufPool.Free(buf)
 
 	// loop to write the raw deflated content to the client
 	for remaining > 0 {
@@ -483,7 +483,7 @@ func serveDeflate(w http.ResponseWriter, r *http.Request, f *zip.File, readerAt 
 		}
 
 		// Note that we read into a different slice than was
-		// obtained from getBuf. The reason for this is that
+		// obtained from bufPool.Get. The reason for this is that
 		// we want to be able to give back the original slice
 		// so that it can be re-used.
 		b := buf[:size]
