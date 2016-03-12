@@ -11,37 +11,41 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
 	errNotImplemented = errors.New("not implemented yet")
 	errFileClosed     = errors.New("file closed")
 	errNotDirectory   = errors.New("not a directory")
+	errDirectory      = errors.New("is a directory")
 )
 
 // FileSystem is a file system based on a ZIP file.
 // It currently does not, (but could) implement the
 // http.FileSystem interface.
 type FileSystem struct {
-	readerAt io.ReaderAt
-	reader   *zip.Reader
-	closer   io.Closer
-	entries  map[string]*fileEntry
+	readerAt  io.ReaderAt
+	reader    *zip.Reader
+	closer    io.Closer
+	fileInfos fileInfoMap
 }
 
 // Open implements the http.FileSystem interface.
 // A http.File is returned, which can be served by
 // the http.FileServer implementation.
 func (fs *FileSystem) Open(name string) (http.File, error) {
+	name = path.Clean(name)
 	name = strings.TrimLeft(name, "/")
-	entry := fs.entries[name]
-	if entry == nil {
-		return nil, os.ErrNotExist
+	fi := fs.fileInfos[name]
+	if fi == nil {
+		return nil, &os.PathError{Op: "Open", Path: name, Err: os.ErrNotExist}
 	}
 
-	return entry.openReader(), nil
+	return fi.openReader(), nil
 }
 
 // Close closes the file system's underlying ZIP file.
@@ -63,100 +67,194 @@ func New(name string) (*FileSystem, error) {
 	if err != nil {
 		return nil, err
 	}
-	fileInfo, err := file.Stat()
+	fi, err := file.Stat()
 	if err != nil {
 		return nil, err
 	}
-	zipReader, err := zip.NewReader(file, fileInfo.Size())
+	zipReader, err := zip.NewReader(file, fi.Size())
 	if err != nil {
 		return nil, err
 	}
 	fs := &FileSystem{
-		closer:   file,
-		readerAt: file,
-		reader:   zipReader,
-		entries:  make(map[string]*fileEntry),
+		closer:    file,
+		readerAt:  file,
+		reader:    zipReader,
+		fileInfos: fileInfoMap{},
 	}
 
 	// Build a map of file paths to speed lookup.
 	// Note that this assumes that there are not a very
 	// large number of files in the ZIP file.
-	for _, f := range fs.reader.File {
-		fs.entries[f.Name] = &fileEntry{
-			fs:      fs,
-			zipFile: f,
+	//
+	// Because we iterate through the map it seems reasonable
+	// to attach each fileInfo to it's parent directory. Once again,
+	// reasonable if the ZIP file does not contain a very large number
+	// of entries.
+	for _, zf := range fs.reader.File {
+		fi := fs.fileInfos.FindOrCreate(zf.Name)
+		fi.zipFile = zf
+		dirEntry := fs.fileInfos.FindOrCreateParent(zf.Name)
+		dirEntry.fileInfos = append(dirEntry.fileInfos, fi)
+	}
+
+	for _, fi := range fs.fileInfos {
+		if len(fi.fileInfos) > 1 {
+			sort.Sort(fi.fileInfos)
 		}
 	}
 
 	return fs, nil
 }
 
-type fileEntry struct {
-	fs       *FileSystem
-	zipFile  *zip.File
-	files    []*fileEntry
-	tempPath string
-	mutex    sync.Mutex
+type fileInfoList []*fileInfo
+
+func (fl fileInfoList) Len() int {
+	return len(fl)
 }
 
-func (entry *fileEntry) openReader() *fileReader {
-	return &fileReader{
-		entry: entry,
+func (fl fileInfoList) Less(i, j int) bool {
+	name1 := fl[i].Name()
+	name2 := fl[j].Name()
+	return strings.Compare(name1, name2) < 0
+}
+
+func (fl fileInfoList) Swap(i, j int) {
+	fi := fl[i]
+	fl[i] = fl[j]
+	fl[j] = fi
+}
+
+// fileMap keeps track of fileInfos
+type fileInfoMap map[string]*fileInfo
+
+func (fm fileInfoMap) FindOrCreate(name string) *fileInfo {
+	strippedName := strings.TrimRight(name, "/")
+	fi := fm[name]
+	if fi == nil {
+		fi = &fileInfo{
+			name: name,
+		}
+		fm[name] = fi
+		if strippedName != name {
+			// directories get two entries: with and without trailing slash
+			fm[strippedName] = fi
+		}
+	}
+	return fi
+}
+
+func (fm fileInfoMap) FindOrCreateParent(name string) *fileInfo {
+	strippedName := strings.TrimRight(name, "/")
+	dirName := path.Dir(strippedName)
+	if dirName == "." {
+		dirName = "/"
+	} else if !strings.HasSuffix(dirName, "/") {
+		dirName = dirName + "/"
+	}
+	return fm.FindOrCreate(dirName)
+}
+
+// fileInfo implements the os.FileInfo interface.
+type fileInfo struct {
+	name      string
+	fs        *FileSystem
+	zipFile   *zip.File
+	fileInfos fileInfoList
+	tempPath  string
+	mutex     sync.Mutex
+}
+
+func (fi *fileInfo) Name() string {
+	return path.Base(fi.name)
+}
+
+func (fi *fileInfo) Size() int64 {
+	if fi.zipFile == nil {
+		return 0
+	}
+	if fi.zipFile.UncompressedSize64 == 0 {
+		return int64(fi.zipFile.UncompressedSize)
+	}
+	return int64(fi.zipFile.UncompressedSize64)
+}
+
+func (fi *fileInfo) Mode() os.FileMode {
+	if fi.zipFile == nil {
+		return 0555 | os.ModeDir
+	}
+	return fi.zipFile.Mode()
+}
+
+var dirTime = time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+
+func (fi *fileInfo) ModTime() time.Time {
+	if fi.zipFile == nil {
+		return dirTime
+	}
+	return fi.zipFile.ModTime()
+}
+
+func (fi *fileInfo) IsDir() bool {
+	if fi.zipFile == nil {
+		return true
+	}
+	return fi.zipFile.Mode().IsDir()
+}
+
+func (fi *fileInfo) Sys() interface{} {
+	return fi.zipFile
+}
+
+func (fi *fileInfo) pathError(op string, err error) error {
+	return &os.PathError{
+		Op:   op,
+		Path: fi.name,
+		Err:  err,
 	}
 }
 
-func (entry *fileEntry) openFile() (*os.File, error) {
-	entry.mutex.Lock()
-	defer entry.mutex.Unlock()
-	if entry.tempPath == "" {
-		tempFile, err := createTempFile(entry.zipFile)
+func (fi *fileInfo) openReader() *fileReader {
+	return &fileReader{
+		fileInfo: fi,
+	}
+}
+
+func (fi *fileInfo) openFile() (*os.File, error) {
+	fi.mutex.Lock()
+	defer fi.mutex.Unlock()
+	if fi.tempPath == "" {
+		tempFile, err := createTempFile(fi.zipFile)
 		if err != nil {
 			return nil, err
 		}
 
 		// remember the name for next time
-		entry.tempPath = tempFile.Name()
+		fi.tempPath = tempFile.Name()
 		return tempFile, nil
 	}
 
 	// temp file already exists
-	return os.Open(entry.tempPath)
+	return os.Open(fi.tempPath)
 }
 
-func (entry *fileEntry) readdir() ([]*fileEntry, error) {
-	if !entry.zipFile.Mode().IsDir() {
+func (fi *fileInfo) readdir() ([]os.FileInfo, error) {
+	if !fi.Mode().IsDir() {
 		return nil, errNotDirectory
 	}
-	// This uses the same mutex as openFile.
-	// They could use separate mutexes because they are indepenent,
-	// but for simplicity share them. Not expecting high performance
-	// requirements for either of these methods.
-	entry.mutex.Lock()
-	defer entry.mutex.Unlock()
 
-	if entry.files == nil {
-		// nil means we have not searched yet, so start with an empty slice
-		entry.files = make([]*fileEntry, 0)
-		prefix := strings.TrimRight(entry.zipFile.Name, "/") + "/"
-		for name, e := range entry.fs.entries {
-			if strings.HasPrefix(name, prefix) {
-				name = name[len(prefix):]
-				if !strings.ContainsRune(name, '/') {
-					// this entry is part of the directory
-					entry.files = append(entry.files, e)
-				}
-			}
-		}
+	v := make([]os.FileInfo, len(fi.fileInfos))
+	for i, fi := range fi.fileInfos {
+		v[i] = fi
 	}
-	return entry.files, nil
+	return v, nil
 }
 
 type fileReader struct {
-	entry   *fileEntry
-	reader  io.ReadCloser
-	file    *os.File
-	closed  bool
-	readdir []*fileEntry
+	fileInfo *fileInfo
+	reader   io.ReadCloser
+	file     *os.File
+	closed   bool
+	readdir  []os.FileInfo
 }
 
 func (f *fileReader) Close() error {
@@ -170,23 +268,23 @@ func (f *fileReader) Close() error {
 
 	f.closed = true
 	if err1 != nil {
-		return err1
+		return f.pathError("Close", err1)
 	}
 	if err2 != nil {
-		return err2
+		return f.pathError("Close", err2)
 	}
 	return nil
 }
 
 func (f *fileReader) Read(p []byte) (n int, err error) {
 	if f.closed {
-		return 0, errFileClosed
+		return 0, f.pathError("Read", errFileClosed)
 	}
 	if f.file != nil {
 		return f.file.Read(p)
 	}
 	if f.reader == nil {
-		f.reader, err = f.entry.zipFile.Open()
+		f.reader, err = f.fileInfo.zipFile.Open()
 		if err != nil {
 			return 0, err
 		}
@@ -196,7 +294,7 @@ func (f *fileReader) Read(p []byte) (n int, err error) {
 
 func (f *fileReader) Seek(offset int64, whence int) (int64, error) {
 	if f.closed {
-		return 0, errFileClosed
+		return 0, f.pathError("Seek", errFileClosed)
 	}
 
 	// The reader cannot seek, so close it.
@@ -207,7 +305,7 @@ func (f *fileReader) Seek(offset int64, whence int) (int64, error) {
 	}
 	if f.file == nil {
 		// Open a file that contains the contents of the zip file.
-		osFile, err := f.entry.openFile()
+		osFile, err := f.fileInfo.openFile()
 		if err != nil {
 			return 0, err
 		}
@@ -218,47 +316,40 @@ func (f *fileReader) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (f *fileReader) Readdir(count int) ([]os.FileInfo, error) {
-	if f.closed {
-		return nil, errFileClosed
-	}
 	var err error
-	var entries []*fileEntry
+	var osFileInfos []os.FileInfo
 
 	if count > 0 {
 		if f.readdir == nil {
-			f.readdir, err = f.entry.readdir()
+			f.readdir, err = f.fileInfo.readdir()
 			if err != nil {
-				return nil, err
+				return nil, f.pathError("Readdir", err)
 			}
 		}
 		if len(f.readdir) >= count {
-			entries = f.readdir[0:count]
+			osFileInfos = f.readdir[0:count]
 			f.readdir = f.readdir[count:]
 		} else {
-			entries = f.readdir
+			osFileInfos = f.readdir
 			f.readdir = nil
 			err = io.EOF
 		}
 	} else {
-		entries, err = f.entry.readdir()
+		osFileInfos, err = f.fileInfo.readdir()
 		if err != nil {
-			return nil, err
+			return nil, f.pathError("Readdir", err)
 		}
 	}
 
-	fileInfos := make([]os.FileInfo, len(entries))
-	for i, entry := range entries {
-		fileInfos[i] = entry.zipFile.FileInfo()
-	}
-
-	return fileInfos, err
+	return osFileInfos, err
 }
 
 func (f *fileReader) Stat() (os.FileInfo, error) {
-	if f.closed {
-		return nil, errFileClosed
-	}
-	return f.entry.zipFile.FileInfo(), nil
+	return f.fileInfo, nil
+}
+
+func (f *fileReader) pathError(op string, err error) error {
+	return f.fileInfo.pathError(op, err)
 }
 
 // FileServer returns a HTTP handler that serves
