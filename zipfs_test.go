@@ -125,7 +125,7 @@ func TestServeHTTP(t *testing.T) {
 			ContentLength:   "4758",
 			ContentEncoding: "deflate",
 			Size:            4758,
-			ETag:            `"1296529fb2ff"`,
+			ETag:            `"1755529fb2ff"`,
 		},
 		{
 			Path:   "/img/circle.png",
@@ -137,28 +137,23 @@ func TestServeHTTP(t *testing.T) {
 			ContentLength:   "5973",
 			ContentEncoding: "",
 			Size:            5973,
-			ETag:            `"1296529fb2ff"`,
+			ETag:            `"1755529fb2ff"`,
 		},
 		{
-			Path:   "/index.html",
+			Path:   "/",
 			Status: 200,
 			Headers: []string{
 				"Accept-Encoding: deflate, gzip",
 			},
 			ContentType:     "text/html; charset=utf-8",
-			ContentLength:   "85",
 			ContentEncoding: "deflate",
-			ETag:            `"5532e54275"`,
 		},
 		{
 			Path:            "/test.html",
 			Status:          200,
 			Headers:         []string{},
 			ContentType:     "text/html; charset=utf-8",
-			ContentLength:   "134",
 			ContentEncoding: "",
-			Size:            134,
-			ETag:            `"5900c7c98f"`,
 		},
 		{
 			Path:   "/does/not/exist",
@@ -253,18 +248,23 @@ func TestServeHTTP(t *testing.T) {
 		w := NewTestResponseWriter()
 		handler.ServeHTTP(w, req)
 
-		assert.Equal(tc.Status, w.status)
+		assert.Equal(tc.Status, w.status, tc.Path)
 		assert.Equal(tc.ContentType, w.Header().Get("Content-Type"), tc.Path)
-		assert.Equal(tc.ContentLength, w.Header().Get("Content-Length"), tc.Path)
+		if tc.ContentLength != "" {
+			// only check content length for non-text because length will differ
+			// between windows and unix
+			assert.Equal(tc.ContentLength, w.Header().Get("Content-Length"), tc.Path)
+		}
 		assert.Equal(tc.ContentEncoding, w.Header().Get("Content-Encoding"), tc.Path)
 		if tc.Size > 0 {
 			assert.Equal(tc.Size, w.buf.Len(), tc.Path)
 		}
 		if tc.ETag != "" {
+			// only check ETag for non-text files because CRC will differ between
+			// windows and unix
 			assert.Equal(tc.ETag, w.Header().Get("Etag"), tc.Path)
 		}
 	}
-
 }
 
 func TestOpen(t *testing.T) {
@@ -295,12 +295,27 @@ func TestOpen(t *testing.T) {
 		if tc.Error == "" {
 			assert.NoError(err)
 			assert.NotNil(f)
+			f.Close()
+
+			// testing error after closing
+			var buf [50]byte
+			_, err := f.Read(buf[:])
+			assert.Error(err)
+			_, err = f.Seek(20, 0)
+			assert.Error(err)
 		} else {
 			assert.Error(err)
 			assert.True(strings.Contains(err.Error(), tc.Error), err.Error())
 			assert.True(strings.Contains(err.Error(), tc.Path), err.Error())
 		}
 	}
+
+	err = fs.Close()
+	assert.NoError(err)
+	f, err := fs.Open("/img/circle.png")
+	assert.Error(err)
+	assert.Nil(f)
+	assert.True(strings.Contains(err.Error(), "filesystem closed"), err.Error())
 }
 
 func TestReaddir(t *testing.T) {
@@ -510,34 +525,40 @@ func TestFile(t *testing.T) {
 		},
 	}
 
+	calcMD5 := func(r io.ReadSeeker, size int, seek bool) string {
+		if seek {
+			n, err := r.Seek(0, 0)
+			require.NoError(err)
+			require.Equal(int64(0), n)
+		}
+		buf := make([]byte, size)
+		n, err := r.Read(buf)
+		require.NoError(err)
+		require.Equal(size, n)
+		md5Text := fmt.Sprintf("%x", md5.Sum(buf))
+		n, err = r.Read(buf)
+		require.Error(err)
+		require.Equal(io.EOF, err)
+		require.Equal(0, n)
+		return md5Text
+	}
+
 	for _, tc := range testCases {
 		file, err := fs.Open(tc.Path)
 		assert.NoError(err)
-		buf := make([]byte, tc.Size)
-		n, err := file.Read(buf)
+		assert.Equal(tc.MD5, calcMD5(file, tc.Size, false))
+
+		// seek back to the beginning, should not have
+		// to create a temporary file
+		nseek, err := file.Seek(0, 0)
 		assert.NoError(err)
-		assert.Equal(tc.Size, n)
-		md5Text := fmt.Sprintf("%x", md5.Sum(buf))
-		assert.Equal(tc.MD5, md5Text)
-		n, err = file.Read(buf)
-		assert.Error(err)
-		assert.Equal(io.EOF, err)
+		assert.Equal(int64(0), nseek)
+		assert.Equal(tc.MD5, calcMD5(file, tc.Size, true))
 
 		nSeek, err := file.Seek(int64(tc.Size/2), 0)
 		assert.NoError(err)
 		assert.Equal(int64(tc.Size/2), nSeek)
-		nSeek, err = file.Seek(0, 0)
-		assert.NoError(err)
-		assert.Equal(int64(0), nSeek)
-
-		n, err = file.Read(buf)
-		assert.NoError(err)
-		assert.Equal(tc.Size, n)
-		md5Text = fmt.Sprintf("%x", md5.Sum(buf))
-		assert.Equal(tc.MD5, md5Text)
-		n, err = file.Read(buf)
-		assert.Error(err)
-		assert.Equal(io.EOF, err)
+		assert.Equal(tc.MD5, calcMD5(file, tc.Size, true))
 
 		file.Close()
 	}
