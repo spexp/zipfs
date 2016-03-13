@@ -135,15 +135,6 @@ func (fs *FileSystem) openFileInfo(name string) (*fileInfo, error) {
 	return fi, nil
 }
 
-// isNotFound returns true if the error is because the file does not exist.
-func isNotFound(err error) bool {
-	if pathError, ok := err.(*os.PathError); ok {
-		return os.IsNotExist(pathError.Err)
-	}
-
-	return os.IsNotExist(err)
-}
-
 // fileMap keeps track of fileInfos
 type fileInfoMap map[string]*fileInfo
 

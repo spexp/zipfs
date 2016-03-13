@@ -2,7 +2,7 @@ package zipfs
 
 // Some of the functions in this file are adapted from private
 // functions in the standard library net/http package.
-
+//
 // Copyright 2009 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE.md file.
@@ -26,21 +26,15 @@ import (
 // http.FileServer implementation because it serves compressed content
 // to clients that can accept the "deflate" compression algorithm.
 func FileServer(fs *FileSystem) http.Handler {
-	return newHandler(fs)
-}
-
-type fileHandler struct {
-	fs       *FileSystem
-	readerAt io.ReaderAt
-	m        map[string]*zip.File
-}
-
-func newHandler(fs *FileSystem) *fileHandler {
 	h := &fileHandler{
 		fs: fs,
 	}
 
 	return h
+}
+
+type fileHandler struct {
+	fs *FileSystem
 }
 
 func (h *fileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
